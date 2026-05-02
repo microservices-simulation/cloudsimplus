@@ -77,4 +77,25 @@ public interface ServiceBroker {
      * (i.e. their root call has completed).
      */
     List<ServiceRequest> getFinishedRequests();
+
+    /**
+     * @return statistics for all finished requests.
+     */
+    ServiceRequestStatistics getStatistics();
+
+    /**
+     * Returns a JSON string containing details of all service calls that occurred,
+     * including caller-callee relationships, handshake durations, and simulation times.
+     *
+     * @return JSON string with call details
+     */
+    String getCallsDetails();
+
+    /**
+     * Returns a JSON string representing a Directed Acyclic Graph (DAG) of services,
+     * including call counts and average latencies between services.
+     *
+     * @return JSON string with DAG representation
+     */
+    String getDAG();
 }
