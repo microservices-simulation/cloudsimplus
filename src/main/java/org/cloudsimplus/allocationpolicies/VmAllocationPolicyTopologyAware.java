@@ -100,8 +100,12 @@ public class VmAllocationPolicyTopologyAware extends VmAllocationPolicyAbstract 
      * Strict (hard) filters that must be satisfied regardless of scoring.
      * Currently enforces RACK_ANTI_AFFINITY: no two VMs of the same replica set
      * may share a rack.
+     *
+     * <p>Subclasses may override to layer additional constraints (e.g.
+     * Kubernetes-style nodeSelector / taints / nodeAffinity) — typically by
+     * delegating to {@code super.passesStrictConstraints(...)} first.</p>
      */
-    private boolean passesStrictConstraints(final Vm vm, final Host host) {
+    protected boolean passesStrictConstraints(final Vm vm, final Host host) {
         if (policy != Policy.RACK_ANTI_AFFINITY || !(host instanceof TopologyAwareHost h)) {
             return true;
         }
@@ -117,7 +121,14 @@ public class VmAllocationPolicyTopologyAware extends VmAllocationPolicyAbstract 
             .noneMatch(rack -> rack.equals(h.getRackId()));
     }
 
-    private double score(final Vm vm, final Host host) {
+    /**
+     * Score function used to rank candidate hosts during placement
+     * (lower is better). Dispatches to a per-{@link Policy} score method.
+     *
+     * <p>Subclasses may override to add their own contributions, typically
+     * by composing with {@code super.score(...)}.</p>
+     */
+    protected double score(final Vm vm, final Host host) {
         return switch (policy) {
             case COST_OPTIMIZED            -> costScore(host);
             case LATENCY_AWARE             -> latencyScore(vm, host);
