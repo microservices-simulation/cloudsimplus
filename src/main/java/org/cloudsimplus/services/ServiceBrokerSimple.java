@@ -23,6 +23,8 @@
  */
 package org.cloudsimplus.services;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import lombok.NonNull;
 import org.cloudsimplus.brokers.DatacenterBrokerSimple;
 import org.cloudsimplus.cloudlets.Cloudlet;
@@ -36,7 +38,9 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Drives a tree of {@link ServiceCall}s to completion on top of the regular
@@ -67,6 +71,11 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
     private final List<ServiceRequest> requests = new ArrayList<>();
     private final List<ServiceRequest> pendingFireOnStart = new ArrayList<>();
     private long nextRequestId;
+
+    // Tracking for calls details and DAG
+    private final List<CallDetail> callDetails = new ArrayList<>();
+    private final Map<String, Map<String, EdgeData>> dag = new LinkedHashMap<>();
+    private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     public ServiceBrokerSimple(final CloudSimPlus simulation) {
         super(simulation);
@@ -127,6 +136,36 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
         return requests.stream().filter(ServiceRequest::isFinished).toList();
     }
 
+    @Override
+    public ServiceRequestStatistics getStatistics() {
+        return new ServiceRequestStatistics(this);
+    }
+
+    @Override
+    public String getCallsDetails() {
+        return gson.toJson(callDetails);
+    }
+
+    @Override
+    public String getDAG() {
+        // Convert dag to a more JSON-friendly structure
+        Map<String, Map<String, Map<String, Object>>> dagJson = new LinkedHashMap<>();
+        for (Map.Entry<String, Map<String, EdgeData>> fromEntry : dag.entrySet()) {
+            String from = fromEntry.getKey();
+            Map<String, Map<String, Object>> toMap = new LinkedHashMap<>();
+            for (Map.Entry<String, EdgeData> toEntry : fromEntry.getValue().entrySet()) {
+                String to = toEntry.getKey();
+                EdgeData data = toEntry.getValue();
+                Map<String, Object> edgeInfo = new LinkedHashMap<>();
+                edgeInfo.put("callCount", data.count);
+                edgeInfo.put("averageLatency", data.getAverageLatency());
+                toMap.put(to, edgeInfo);
+            }
+            dagJson.put(from, toMap);
+        }
+        return gson.toJson(dagJson);
+    }
+
     // -------------- Lifecycle hooks --------------
 
     @Override
@@ -177,6 +216,13 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
         if (call.isRoot()) {
             request.setStartTime(getSimulation().clock() + extraDelay);
         }
+
+        // Record call detail
+        String callerService = parent != null ? parent.getService().getName() : "root";
+        String calleeService = call.getService().getName();
+        double handshakeDuration = call.getNetworkDelay();
+        double simulationTime = getSimulation().clock();
+        callDetails.add(new CallDetail(callerService, calleeService, handshakeDuration, simulationTime));
 
         runPrePhase(call, extraDelay);
     }
@@ -255,6 +301,17 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
         call.setState(ServiceCall.State.COMPLETED);
         call.setFinishTime(getSimulation().clock());
 
+        // Update DAG if not root
+        if (!call.isRoot()) {
+            String from = call.getParent().getService().getName();
+            String to = call.getService().getName();
+            double latency = call.getFinishTime() - call.getStartTime();
+            dag.computeIfAbsent(from, k -> new LinkedHashMap<>())
+               .computeIfAbsent(to, k -> new EdgeData())
+               .count++;
+            dag.get(from).get(to).sumLatency += latency;
+        }
+
         if (call.isRoot()) {
             final var req = call.getRequest();
             req.setFinishTime(getSimulation().clock());
@@ -306,4 +363,23 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
     private enum Phase { AFTER_PRE, AFTER_POST }
 
     private record CallAdvance(ServiceCall call, Phase phase) {}
+
+    /**
+     * Details of a service call for monitoring and analysis.
+     */
+    public record CallDetail(
+        String callerService,
+        String calleeService,
+        double handshakeDuration,
+        double simulationTime
+    ) {}
+
+    private static class EdgeData {
+        int count = 0;
+        double sumLatency = 0.0;
+
+        double getAverageLatency() {
+            return count == 0 ? 0.0 : sumLatency / count;
+        }
+    }
 }
