@@ -1,0 +1,175 @@
+instances:
+  - prefix: carts
+    type: pod
+    labels:
+      - carts
+    replicas: 2
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+    requests:
+      share: 100
+      ram: 200
+    limits:
+      share: 300
+      ram: 500
+
+  - prefix: carts-db
+    type: pod
+    labels:
+      - carts-db
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+
+  - prefix: front-end
+    type: pod
+    labels:
+      - front-end
+    replicas: 2
+    size: 500
+    rec_bw: 100
+    trans_bw: 5000
+    requests:
+      share: 100
+      ram: 300
+    limits:
+      share: 300
+      ram: 1000
+
+  - prefix: catalogue
+    type: pod
+    labels:
+      - catalogue
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 500
+    requests:
+      share: 100
+      ram: 100
+    limits:
+      share: 200
+      ram: 200
+
+  - prefix: catalogue-db
+    type: pod
+    labels:
+      - catalogue-db
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+
+  - prefix: orders
+    type: pod
+    labels:
+      - orders
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+    requests:
+      share: 100
+      ram: 300
+    limits:
+      share: 500
+      ram: 500
+
+  - prefix: orders-db
+    type: pod
+    labels:
+      - orders-db
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+
+  - prefix: payment
+    type: pod
+    labels:
+      - payment
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 500
+    requests:
+      share: 100
+      ram: 100
+    limits:
+      share: 200
+      ram: 200
+
+  - prefix: queue-master
+    type: pod
+    labels:
+      - queue-master
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+    requests:
+      share: 100
+      ram: 300
+    limits:
+      share: 300
+      ram: 500
+
+  - prefix: rabbitmq
+    type: pod
+    labels:
+      - rabbitmq
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+
+
+  - prefix: session-db
+    type: pod
+    labels:
+      - session-db
+    replicas: 2
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+
+  - prefix: shipping
+    type: pod
+    labels:
+      - shipping
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
+    requests:
+      share: 100
+      ram: 300
+    limits:
+      share: 300
+      ram: 500
+
+  - prefix: user
+    type: pod
+    labels:
+      - user
+    replicas: 1
+    size: 500
+    rec_bw: 500
+    trans_bw: 1000
+    requests:
+      share: 100
+      ram: 100
+    limits:
+      share: 300
+      ram: 200
+
+  - prefix: user-db
+    type: pod
+    labels:
+      - user-db
+    replicas: 1
+    size: 500
+    rec_bw: 100
+    trans_bw: 100
