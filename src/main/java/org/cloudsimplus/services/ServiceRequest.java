@@ -29,7 +29,9 @@ import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A top-level request that enters the system and triggers a {@link ServiceCall}
@@ -64,6 +66,22 @@ public class ServiceRequest {
 
     /** When the root call (and the whole tree) finished. */
     private double finishTime = -1;
+
+    /**
+     * The {@link Api} this request was generated from, or {@code null} if the
+     * request was built outside of the {@link org.cloudsimplus.services.generator.RequestGenerator}
+     * (e.g. constructed by hand in a unit test).
+     */
+    private Api api;
+
+    /**
+     * Cumulative path delay (in seconds) accrued at every {@link Service} that
+     * the request has touched. Populated by the broker as each {@link ServiceCall}
+     * completes and consumed by the critical-path latency calculation
+     * (max over the {@link ServiceGraph#getSinks(java.util.List) sink} services
+     * of the chain).
+     */
+    private final Map<Service, Double> nodeDelay = new HashMap<>();
 
     private final List<Object> tags = new ArrayList<>();
 
@@ -102,6 +120,36 @@ public class ServiceRequest {
      */
     public List<Object> getTags() {
         return Collections.unmodifiableList(tags);
+    }
+
+    /**
+     * Records (or updates) the cumulative path delay accrued at the given service
+     * for this request. The delay is the time elapsed between the request's
+     * {@link #getSubmissionTime() submission} and the moment the service finished
+     * processing this request along the call path that reached it.
+     *
+     * <p>If a delay was previously recorded for the same service, the larger
+     * value wins (keeping the longest path through that node, which is what the
+     * critical-path latency calculation needs).</p>
+     *
+     * @param service the service whose path delay is being recorded
+     * @param delay   cumulative path delay in seconds (must be &ge; 0)
+     * @return this request, to enable chaining
+     */
+    public ServiceRequest recordNodeDelay(@NonNull final Service service, final double delay) {
+        if (delay < 0) {
+            throw new IllegalArgumentException("delay must be >= 0");
+        }
+        nodeDelay.merge(service, delay, Math::max);
+        return this;
+    }
+
+    /**
+     * @return an unmodifiable view of the per-service cumulative path delay map
+     *         populated by the broker as the request progresses.
+     */
+    public Map<Service, Double> getNodeDelay() {
+        return Collections.unmodifiableMap(nodeDelay);
     }
 
     /**
