@@ -33,6 +33,7 @@ import org.cloudsimplus.cloudlets.CloudletSimple;
 import org.cloudsimplus.core.CloudSimPlus;
 import org.cloudsimplus.core.events.SimEvent;
 import org.cloudsimplus.services.generator.RequestGenerator;
+import org.cloudsimplus.services.policy.scaling.ServiceScalingPolicy;
 import org.cloudsimplus.services.reporting.ResourceUsageRecorder;
 import org.cloudsimplus.utilizationmodels.UtilizationModelFull;
 import org.cloudsimplus.vms.Vm;
@@ -100,6 +101,9 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
     private int globalRpsBucket;
     /** Sampled global RPS history, written by the reporter. */
     @Getter private final List<Double> globalRpsHistory = new ArrayList<>();
+
+    /** Per-service scaling policies, evaluated every scheduling tick. */
+    private final Map<Service, ServiceScalingPolicy> scalingPolicies = new IdentityHashMap<>();
 
     public ServiceBrokerSimple(final CloudSimPlus simulation) {
         super(simulation);
@@ -201,6 +205,24 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
         }
         this.serviceSchedulingInterval = seconds;
         return this;
+    }
+
+    /**
+     * Registers a {@link ServiceScalingPolicy} for {@code service}. The
+     * policy will be evaluated on every
+     * {@link #getServiceSchedulingInterval() scheduling tick}: if
+     * {@link ServiceScalingPolicy#needScaling(Service)} returns {@code true},
+     * {@link ServiceScalingPolicy#scale(Service)} is invoked.
+     */
+    public ServiceBrokerSimple setServiceScalingPolicy(@NonNull final Service service,
+                                                       @NonNull final ServiceScalingPolicy policy) {
+        scalingPolicies.put(service, policy);
+        return this;
+    }
+
+    /** @return read-only view of the registered scaling policies. */
+    public Map<Service, ServiceScalingPolicy> getScalingPolicies() {
+        return Collections.unmodifiableMap(scalingPolicies);
     }
 
     @Override
@@ -508,6 +530,13 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
     private void tickServiceSchedule() {
         if (resourceUsageRecorder != null) {
             resourceUsageRecorder.recordSample(getSimulation().clock());
+        }
+        // Evaluate every registered service-scaling policy.
+        for (final var entry : scalingPolicies.entrySet()) {
+            final var policy = entry.getValue();
+            if (policy.needScaling(entry.getKey())) {
+                policy.scale(entry.getKey());
+            }
         }
         // Re-arm only while the generator is still producing requests, or
         // there are pending requests that haven't finished yet. Otherwise the
