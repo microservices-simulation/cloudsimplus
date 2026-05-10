@@ -47,6 +47,10 @@ public class ServiceSimple implements Service {
     private final List<Vm> vms;
     private int nextVmIndex;
 
+    private final List<String> labels = new ArrayList<>();
+    private final List<String> apiList = new ArrayList<>();
+    private ServiceGraph serviceGraph;
+
     /**
      * Creates a service with no backing VMs yet.
      * @param name the service name (used for logging and request tracing)
@@ -115,6 +119,49 @@ public class ServiceSimple implements Service {
         final var vm = vms.get(nextVmIndex % vms.size());
         nextVmIndex = (nextVmIndex + 1) % vms.size();
         return vm;
+    }
+
+    @Override
+    public List<String> getLabels() {
+        return Collections.unmodifiableList(labels);
+    }
+
+    @Override
+    public Service addLabel(@NonNull final String label) {
+        if (label.isBlank()) {
+            throw new IllegalArgumentException("label must not be blank");
+        }
+        if (!labels.contains(label)) {
+            labels.add(label);
+        }
+        return this;
+    }
+
+    @Override
+    public List<String> getApiList() {
+        return Collections.unmodifiableList(apiList);
+    }
+
+    @Override
+    public Service addApi(@NonNull final String apiName) {
+        if (apiName.isBlank()) {
+            throw new IllegalArgumentException("apiName must not be blank");
+        }
+        if (!apiList.contains(apiName)) {
+            apiList.add(apiName);
+        }
+        return this;
+    }
+
+    @Override
+    public ServiceGraph getServiceGraph() {
+        return serviceGraph;
+    }
+
+    @Override
+    public Service setServiceGraph(final ServiceGraph graph) {
+        this.serviceGraph = graph;
+        return this;
     }
 
     @Override

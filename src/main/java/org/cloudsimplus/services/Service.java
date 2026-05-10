@@ -25,6 +25,7 @@ package org.cloudsimplus.services;
 
 import org.cloudsimplus.vms.Vm;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -81,4 +82,61 @@ public interface Service {
      * @return the selected VM, or {@link Vm#NULL} if the pool is empty.
      */
     Vm selectVm();
+
+    /**
+     * @return read-only list of arbitrary string labels attached to this service
+     *         (e.g. {@code ["catalogue-db", "mysql"]}). Used by allocation /
+     *         scaling policies that match against label selectors.
+     */
+    default List<String> getLabels() {
+        return Collections.emptyList();
+    }
+
+    /**
+     * Attaches a label to this service.
+     * @param label the label to add (must be non-blank)
+     * @return this service, to enable chaining
+     */
+    default Service addLabel(final String label) {
+        return this;
+    }
+
+    /**
+     * @return read-only list of {@link Api} names this service participates in
+     *         serving.
+     */
+    default List<String> getApiList() {
+        return Collections.emptyList();
+    }
+
+    /**
+     * Registers an API name this service participates in serving. Used by
+     * {@link ServiceGraph#buildServiceChains(List)} to filter the per-API chain.
+     *
+     * @param apiName the API identifier (e.g. {@code "GET /catalogue"})
+     * @return this service, to enable chaining
+     */
+    default Service addApi(final String apiName) {
+        return this;
+    }
+
+    /**
+     * @return the {@link ServiceGraph} this service belongs to, or {@code null}
+     *         if it has not been registered with any graph yet.
+     */
+    default ServiceGraph getServiceGraph() {
+        return null;
+    }
+
+    /**
+     * Sets the {@link ServiceGraph} back-reference (called by
+     * {@link ServiceGraph#addService(Service, Service)}).
+     *
+     * @param graph the graph this service is being added to (may be {@code null}
+     *              to clear the back-reference)
+     * @return this service, to enable chaining
+     */
+    default Service setServiceGraph(final ServiceGraph graph) {
+        return this;
+    }
 }
