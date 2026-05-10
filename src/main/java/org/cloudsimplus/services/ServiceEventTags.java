@@ -39,4 +39,18 @@ public final class ServiceEventTags {
      * internal record.
      */
     public static final int CALL_ADVANCE = 9700;
+
+    /**
+     * Periodic self-event that ticks the
+     * {@link org.cloudsimplus.services.generator.RequestGenerator request generator}
+     * and submits the resulting batch of {@link ServiceRequest}s.
+     */
+    public static final int REQUEST_GENERATE = 9701;
+
+    /**
+     * Periodic self-event that drives service-level scheduling: samples
+     * resource usage and triggers the registered scaling / migration
+     * policies.
+     */
+    public static final int SERVICE_SCHEDULE = 9702;
 }

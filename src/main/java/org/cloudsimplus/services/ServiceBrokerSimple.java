@@ -25,12 +25,15 @@ package org.cloudsimplus.services;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import lombok.Getter;
 import lombok.NonNull;
 import org.cloudsimplus.brokers.DatacenterBrokerSimple;
 import org.cloudsimplus.cloudlets.Cloudlet;
 import org.cloudsimplus.cloudlets.CloudletSimple;
 import org.cloudsimplus.core.CloudSimPlus;
 import org.cloudsimplus.core.events.SimEvent;
+import org.cloudsimplus.services.generator.RequestGenerator;
+import org.cloudsimplus.services.reporting.ResourceUsageRecorder;
 import org.cloudsimplus.utilizationmodels.UtilizationModelFull;
 import org.cloudsimplus.vms.Vm;
 import org.slf4j.Logger;
@@ -38,9 +41,13 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Drives a tree of {@link ServiceCall}s to completion on top of the regular
@@ -77,6 +84,23 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
     private final Map<String, Map<String, EdgeData>> dag = new LinkedHashMap<>();
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
+    /** Cumulative path delay tracking, used for the critical-path latency calc. */
+    private final Map<ServiceCall, Double> cumulativeDelay = new IdentityHashMap<>();
+
+    /** Cloud-native extensions (steps 7+). */
+    @Getter private RequestGenerator requestGenerator;
+    @Getter private ServiceGraph serviceGraph;
+    @Getter private ResourceUsageRecorder resourceUsageRecorder;
+    @Getter private double requestInterval = 1.0;
+    @Getter private double serviceSchedulingInterval = 10.0;
+
+    /** Per-API request count accumulated since the last RPS sample. */
+    private final Map<Api, Integer> rpsBucket = new HashMap<>();
+    /** Total request count in the global bucket since the last RPS sample. */
+    private int globalRpsBucket;
+    /** Sampled global RPS history, written by the reporter. */
+    @Getter private final List<Double> globalRpsHistory = new ArrayList<>();
+
     public ServiceBrokerSimple(final CloudSimPlus simulation) {
         super(simulation);
     }
@@ -112,11 +136,70 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
         request.setSubmissionTime(getSimulation().clock());
         requests.add(request);
 
+        // If the request was generated from an Api with a built service chain,
+        // expand its placeholder root call into the full ServiceCall tree.
+        if (request.getApi() != null && serviceGraph != null
+            && !request.getApi().getServiceChain().isEmpty()) {
+            expandCallTreeFromApi(request);
+        }
+
+        // Bookkeeping for RPS history (per-API + global).
+        if (request.getApi() != null) {
+            rpsBucket.merge(request.getApi(), 1, Integer::sum);
+        }
+        globalRpsBucket++;
+
         if (isStarted()) {
             scheduleRequestStart(request);
         } else {
             pendingFireOnStart.add(request);
         }
+        return this;
+    }
+
+    /**
+     * Configures the {@link RequestGenerator} that will be ticked every
+     * {@link #getRequestInterval() requestInterval} seconds once the broker
+     * starts. Pass {@code null} to disable automatic generation.
+     */
+    public ServiceBrokerSimple setRequestGenerator(final RequestGenerator gen) {
+        this.requestGenerator = gen;
+        return this;
+    }
+
+    /**
+     * Configures the {@link ServiceGraph} used to expand requests' call trees
+     * from their {@link Api#getServiceChain() service chains}.
+     */
+    public ServiceBrokerSimple setServiceGraph(final ServiceGraph graph) {
+        this.serviceGraph = graph;
+        return this;
+    }
+
+    /**
+     * Configures the {@link ResourceUsageRecorder} that will be ticked every
+     * {@link #getServiceSchedulingInterval() schedulingInterval} seconds.
+     */
+    public ServiceBrokerSimple setResourceUsageRecorder(final ResourceUsageRecorder rec) {
+        this.resourceUsageRecorder = rec;
+        return this;
+    }
+
+    /** Sets the request-generation cadence (seconds). Must be &gt; 0. */
+    public ServiceBrokerSimple setRequestInterval(final double seconds) {
+        if (seconds <= 0) {
+            throw new IllegalArgumentException("requestInterval must be > 0");
+        }
+        this.requestInterval = seconds;
+        return this;
+    }
+
+    /** Sets the service-scheduling cadence (seconds). Must be &gt; 0. */
+    public ServiceBrokerSimple setServiceSchedulingInterval(final double seconds) {
+        if (seconds <= 0) {
+            throw new IllegalArgumentException("serviceSchedulingInterval must be > 0");
+        }
+        this.serviceSchedulingInterval = seconds;
         return this;
     }
 
@@ -173,7 +256,16 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
         super.startInternal();
         // Pending requests get fired only after VMs are created. We register a one-shot listener
         // that drains the pending queue as soon as all submitted VMs are up.
-        addOnVmsCreatedListener(info -> drainPendingRequests());
+        addOnVmsCreatedListener(info -> {
+            drainPendingRequests();
+            // Kick off the periodic generator/scheduling self-events once VMs exist.
+            if (requestGenerator != null) {
+                schedule(0.0, ServiceEventTags.REQUEST_GENERATE);
+            }
+            if (resourceUsageRecorder != null) {
+                schedule(0.0, ServiceEventTags.SERVICE_SCHEDULE);
+            }
+        });
     }
 
     private void drainPendingRequests() {
@@ -312,12 +404,39 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
             dag.get(from).get(to).sumLatency += latency;
         }
 
+        // Critical-path bookkeeping: cumulative delay from the root to this call.
+        final double parentDelay = call.isRoot()
+            ? 0.0
+            : cumulativeDelay.getOrDefault(call.getParent(), 0.0);
+        final double localElapsed = Math.max(0, call.getElapsedTime());
+        final double cumulative = parentDelay + localElapsed;
+        cumulativeDelay.put(call, cumulative);
+        call.getRequest().recordNodeDelay(call.getService(), cumulative);
+
         if (call.isRoot()) {
             final var req = call.getRequest();
-            req.setFinishTime(getSimulation().clock());
+            // Critical path: max cumulative delay over the chain's sinks (or
+            // root finish, whichever is greater). For the synchronous,
+            // sequential-fanout default this naturally reduces to the root's
+            // elapsed time; for parallel fanout it's the longest path.
+            double finishTime = getSimulation().clock();
+            if (req.getApi() != null && serviceGraph != null
+                && !req.getApi().getServiceChain().isEmpty()) {
+                final var sinks = serviceGraph.getSinks(req.getApi().getServiceChain());
+                double maxPath = 0.0;
+                for (final var sink : sinks) {
+                    maxPath = Math.max(maxPath, req.getNodeDelay().getOrDefault(sink, 0.0));
+                }
+                if (maxPath > 0) {
+                    finishTime = req.getSubmissionTime() + maxPath;
+                }
+            }
+            req.setFinishTime(finishTime);
             LOG.info("{}: {}: Request {} (root service '{}') finished. Response time: {}s.",
                 getSimulation().clockStr(), getName(), req.getId(),
                 call.getService().getName(), formatTime(req.getResponseTime()));
+            // Best-effort cleanup of the per-request entries to avoid unbounded growth.
+            cumulativeDelay.keySet().removeIf(c -> c.getRequest() == req);
             return;
         }
         onChildCompleted(call.getParent());
@@ -341,7 +460,110 @@ public class ServiceBrokerSimple extends DatacenterBrokerSimple implements Servi
             handleCloudletFinish(ca.call(), ca.phase());
             return;
         }
+        if (evt.getTag() == ServiceEventTags.REQUEST_GENERATE) {
+            tickGenerator();
+            return;
+        }
+        if (evt.getTag() == ServiceEventTags.SERVICE_SCHEDULE) {
+            tickServiceSchedule();
+            return;
+        }
         super.processEvent(evt);
+    }
+
+    /**
+     * Drives one tick of the registered {@link RequestGenerator} (if any) and
+     * schedules the next tick. All requests produced this tick are immediately
+     * submitted via {@link #submitRequest(ServiceRequest)}.
+     */
+    private void tickGenerator() {
+        if (requestGenerator == null) {
+            return;
+        }
+        final double clock = getSimulation().clock();
+        final var batch = requestGenerator.generate(clock);
+        for (final var req : batch) {
+            submitRequest(req);
+        }
+
+        // Sample RPS into the global + per-API histories.
+        globalRpsHistory.add(globalRpsBucket / requestInterval);
+        globalRpsBucket = 0;
+        for (final var entry : new HashMap<>(rpsBucket).entrySet()) {
+            entry.getKey().recordRpsSample(entry.getValue(), (int) Math.max(1, requestInterval));
+        }
+        rpsBucket.clear();
+
+        // Re-arm the next tick only while the generator still has work to do.
+        if (clock + requestInterval <= requestGenerator.getTimeLimit()
+            && requestGenerator.getTotalGenerated() < requestGenerator.getNumLimit()) {
+            schedule(requestInterval, ServiceEventTags.REQUEST_GENERATE);
+        }
+    }
+
+    /**
+     * Drives one tick of the {@link ResourceUsageRecorder} (if any). Service
+     * scaling/migration policy triggers will be plugged in step 8.
+     */
+    private void tickServiceSchedule() {
+        if (resourceUsageRecorder != null) {
+            resourceUsageRecorder.recordSample(getSimulation().clock());
+        }
+        // Re-arm only while the generator is still producing requests, or
+        // there are pending requests that haven't finished yet. Otherwise the
+        // simulation has nothing left to do and would loop forever on the
+        // periodic self-event alone.
+        final boolean genActive = requestGenerator != null
+            && getSimulation().clock() + serviceSchedulingInterval
+                <= requestGenerator.getTimeLimit()
+            && requestGenerator.getTotalGenerated() < requestGenerator.getNumLimit();
+        final boolean pending = requests.stream().anyMatch(r -> !r.isFinished());
+        if (genActive || pending) {
+            schedule(serviceSchedulingInterval, ServiceEventTags.SERVICE_SCHEDULE);
+        }
+    }
+
+    /**
+     * Expands the placeholder {@link ServiceRequest#getRootCall() root call} of
+     * {@code request} into the full {@link ServiceCall} tree dictated by its
+     * {@link Api#getServiceChain() service chain}.
+     *
+     * <p>Children are added in a breadth-first walk constrained to the chain
+     * (so services outside the chain are pruned), and cycles are broken by
+     * tracking visited services along each path. A leaf in the chain
+     * contributes no children.</p>
+     */
+    private void expandCallTreeFromApi(final ServiceRequest request) {
+        final var api = request.getApi();
+        final var chain = api.getServiceChain();
+        final var rootCall = request.getRootCall();
+
+        // Pin the root call to the chain's source (first by topological order).
+        // Root sources are services in the chain with no parent inside it.
+        final var sources = serviceGraph.getSources(chain);
+        if (sources.isEmpty()) {
+            return; // ill-formed chain — leave the placeholder alone.
+        }
+        rootCall.setService(sources.getFirst());
+
+        // Recursively attach children from the graph, restricted to chain
+        // membership and visited-set deduplication.
+        final long perCallLength = rootCall.getLengthBeforeCalls();
+        attachChildren(rootCall, chain, new HashSet<>(Set.of(rootCall.getService())), perCallLength);
+    }
+
+    private void attachChildren(final ServiceCall parent,
+                                final List<Service> chain,
+                                final Set<Service> visited,
+                                final long perCallLength) {
+        for (final Service child : serviceGraph.getCalls(parent.getService())) {
+            if (!chain.contains(child) || !visited.add(child)) {
+                continue;
+            }
+            final var childCall = new ServiceCall(child, perCallLength);
+            parent.addChild(childCall);
+            attachChildren(childCall, chain, visited, perCallLength);
+        }
     }
 
     // -------------- Helpers --------------
