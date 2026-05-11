@@ -13,4 +13,9 @@ module cloudsimplus {
     requires com.fasterxml.jackson.annotation;
     requires com.fasterxml.jackson.databind;
     requires com.fasterxml.jackson.dataformat.yaml;
+
+    // Optional Grafana MySQL sink (services.reporting.mysql.MysqlResourceUsageSink)
+    // uses java.sql / JDBC. The mysql-connector-j driver is loaded via SPI at
+    // runtime and is declared <optional>true</optional> in the POM.
+    requires java.sql;
 }

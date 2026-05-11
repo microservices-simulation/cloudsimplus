@@ -42,6 +42,7 @@ import org.cloudsimplus.services.policy.allocation.ServiceAllocationPolicySimple
 import org.cloudsimplus.services.policy.scaling.HorizontalServiceScalingPolicy;
 import org.cloudsimplus.services.reporting.ResourceUsageRecorder;
 import org.cloudsimplus.services.reporting.ServiceReporter;
+import org.cloudsimplus.services.reporting.mysql.MysqlResourceUsageSink;
 import org.cloudsimplus.util.Log;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -118,6 +119,51 @@ class SockShopExample {
         final var run = run(out);
         System.out.println("SockShopExample — wrote artifacts to " + out.toAbsolutePath());
         System.out.println(run.summary());
+
+        exportToMysql(out.resolve("Resource_Report.csv"));
+    }
+
+    /**
+     * Loads the just-written {@code Resource_Report.csv} into the
+     * {@code mybatis.grafana_table} MySQL table consumed by the
+     * {@code grafana/instance-usage.json} dashboard.
+     *
+     * <p>Configurable via environment variables (any unset value falls back to
+     * the localhost MySQL 8 setup the dashboard ships with):</p>
+     * <ul>
+     *   <li>{@code SOCKSHOP_MYSQL_URL} — JDBC URL
+     *       (default {@code jdbc:mysql://localhost:3306/mybatis})</li>
+     *   <li>{@code SOCKSHOP_MYSQL_USER} — user (default {@code root})</li>
+     *   <li>{@code SOCKSHOP_MYSQL_PASSWORD} — password (default {@code root})</li>
+     *   <li>{@code SOCKSHOP_MYSQL_ENABLED} — set to {@code false} to skip the
+     *       load entirely (default {@code true})</li>
+     * </ul>
+     *
+     * <p>Any failure to reach the database is logged to {@code stderr} but does
+     * not fail the run — the CSV artifacts are still available for inspection.</p>
+     */
+    private static void exportToMysql(final Path csvPath) {
+        final var env = System.getenv();
+        if ("false".equalsIgnoreCase(env.getOrDefault("SOCKSHOP_MYSQL_ENABLED", "true"))) {
+            System.out.println("MySQL export disabled (SOCKSHOP_MYSQL_ENABLED=false). Skipping.");
+            return;
+        }
+        final String jdbcUrl = envOr(env, "SOCKSHOP_MYSQL_URL", "jdbc:mysql://localhost:3306/mybatis");
+        final String user    = envOr(env, "SOCKSHOP_MYSQL_USER", "root");
+        final String pass    = envOr(env, "SOCKSHOP_MYSQL_PASSWORD", "root");
+        try {
+            final int rows = new MysqlResourceUsageSink(jdbcUrl, user, pass).loadCsv(csvPath);
+            System.out.printf("MySQL export — loaded %d row(s) into mybatis.grafana_table (%s)%n",
+                rows, jdbcUrl);
+        } catch (Exception e) {
+            System.err.println("MySQL export failed (CSV artifacts are still in "
+                + csvPath.getParent() + "): " + e.getMessage());
+        }
+    }
+
+    private static String envOr(final java.util.Map<String, String> env, final String key, final String def) {
+        final String v = env.get(key);
+        return v != null && !v.isBlank() ? v : def;
     }
 
     /** Result summary for assertions / logging. */

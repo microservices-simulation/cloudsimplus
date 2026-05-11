@@ -79,6 +79,13 @@ public class ResourceUsageRecorder {
     private final Map<String, List<UsageSample>> cpuHistory = new LinkedHashMap<>();
     private final Map<String, List<UsageSample>> ramHistory = new LinkedHashMap<>();
 
+    /**
+     * Cumulative MI processed by each VM as observed at the most recent
+     * sample. The next sample subtracts this from the current cumulative
+     * count to derive MI processed in the elapsed window (→ MIPS).
+     */
+    private final Map<String, Long> lastTotalMi = new LinkedHashMap<>();
+
     private double lastSampleTime = -1;
 
     /**
@@ -167,7 +174,7 @@ public class ResourceUsageRecorder {
         for (final var entry : vmsByUid.entrySet()) {
             final var uid = entry.getKey();
             final var vm = entry.getValue();
-            cpuHistory.get(uid).add(new UsageSample(clock, session, cpuUsage(vm)));
+            cpuHistory.get(uid).add(new UsageSample(clock, session, cpuUsage(uid, vm, session)));
             ramHistory.get(uid).add(new UsageSample(clock, session, ramUsage(vm)));
         }
         lastSampleTime = clock;
@@ -247,9 +254,65 @@ public class ResourceUsageRecorder {
         return count == 0 ? 0.0 : sum / count;
     }
 
-    private static double cpuUsage(final Vm vm) {
-        // Absolute CPU consumption in MIPS = % utilization × total MIPS capacity.
+    /**
+     * Returns the CPU usage in MIPS for {@code vm} over the window ending at
+     * the current sample.
+     *
+     * <p>The primary metric is the time-integrated MIPS implied by the VM's
+     * cloudlet executions: {@code (MI processed during the window) / windowSec}.
+     * This correctly accounts for bursty workloads where individual cloudlets
+     * complete in much less time than the {@link #getSamplingInterval()
+     * sampling interval} — the case where the previous instantaneous-snapshot
+     * formula systematically read 0.</p>
+     *
+     * <p>When the VM has no {@link org.cloudsimplus.schedulers.cloudlet.CloudletScheduler
+     * CloudletScheduler} bound (e.g. mocked in unit tests) or no MI was
+     * processed in this window, falls back to the instantaneous
+     * {@code getCpuPercentUtilization() × totalMipsCapacity} formula.</p>
+     */
+    private double cpuUsage(final String uid, final Vm vm, final double sessionSec) {
+        final long totalMi = totalProcessedMi(vm);
+        final long prev = lastTotalMi.getOrDefault(uid, 0L);
+        final long deltaMi = Math.max(0L, totalMi - prev);
+        lastTotalMi.put(uid, totalMi);
+        if (deltaMi > 0 && sessionSec > 0) {
+            return (double) deltaMi / sessionSec;
+        }
         return vm.getCpuPercentUtilization() * vm.getTotalMipsCapacity();
+    }
+
+    /**
+     * Sums {@code getFinishedLengthSoFar() × pesNumber} (total MI processed)
+     * across every cloudlet that has executed or is executing on {@code vm}.
+     * Returns 0 if the VM has no scheduler or the lists are unavailable
+     * (defensive — covers Mockito-mocked VMs in tests).
+     */
+    private static long totalProcessedMi(final Vm vm) {
+        final var sched = vm.getCloudletScheduler();
+        if (sched == null) {
+            return 0L;
+        }
+        long sum = 0L;
+        try {
+            final var finished = sched.getCloudletFinishedList();
+            if (finished != null) {
+                for (final var ce : finished) {
+                    sum += (long) ce.getCloudlet().getFinishedLengthSoFar() * ce.getCloudlet().getPesNumber();
+                }
+            }
+            final var exec = sched.getCloudletExecList();
+            if (exec != null) {
+                for (final var ce : exec) {
+                    sum += (long) ce.getCloudlet().getFinishedLengthSoFar() * ce.getCloudlet().getPesNumber();
+                }
+            }
+        } catch (final NullPointerException ignored) {
+            // Defensive: a partially-stubbed mock scheduler may return nulls
+            // on accessors. Treat as "no MI processed" and let the caller fall
+            // back to the instantaneous formula.
+            return 0L;
+        }
+        return sum;
     }
 
     private static double ramUsage(final Vm vm) {

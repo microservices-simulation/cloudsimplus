@@ -504,6 +504,22 @@
             <version>26.0.2</version>
             <scope>compile</scope>
         </dependency>
+
+        <!--
+        MySQL Connector/J — used by the optional Grafana MySQL sink
+        (org.cloudsimplus.services.reporting.mysql.MysqlResourceUsageSink),
+        which loads Resource_Report.csv into the instance-usage dashboard's
+        grafana_table via LOAD DATA LOCAL INFILE.
+        Marked <optional>true</optional> so it stays on this project's
+        classpath (tests + examples) without leaking onto downstream
+        consumers that don't enable the sink.
+        -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>9.1.0</version>
+            <optional>true</optional>
+        </dependency>
     </dependencies>
 
     <reporting>

@@ -66,10 +66,10 @@
           "global_query_id": "",
           "parser": "simple",
           "refId": "A",
-          "root_selector": "",
+          "root_selector": "nodes",
           "source": "url",
           "type": "json",
-          "url": "${nodes_url}",
+          "url": "http://localhost:8000/nodes.json",
           "url_options": {
             "data": "",
             "method": "GET"
@@ -86,10 +86,10 @@
           "global_query_id": "",
           "hide": false,
           "refId": "B",
-          "root_selector": "",
+          "root_selector": "edges",
           "source": "url",
           "type": "json",
-          "url": "${edges_url}",
+          "url": "http://localhost:8000/edges.json",
           "url_options": {
             "data": "",
             "method": "GET"
